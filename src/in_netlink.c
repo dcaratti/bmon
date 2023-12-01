@@ -48,6 +48,10 @@ static struct bmon_module netlink_ops;
 #include <netlink/route/class.h>
 #include <netlink/route/classifier.h>
 #include <netlink/route/qdisc/htb.h>
+#include <netlink/route/cls/flower.h>
+#include <netlink/route/cls/u32.h>
+#include <netlink/route/cls/matchall.h>
+#include <netlink/route/cls/basic.h>
 
 /* These counters are not available prior to libnl 3.2.25. Set them to -1 so
  * rtnl_link_get_stat() won't be called for them. */
@@ -547,6 +551,29 @@ static void handle_qdisc(struct nl_object *obj, void *);
 static void find_classes(uint32_t, struct rdata *);
 static void find_qdiscs(int, uint32_t, struct rdata *);
 
+void workaround_classifier_stats(struct element *e, struct rtnl_cls *cls)
+{
+	struct rtnl_act *act = NULL;
+	int64_t c_tx;
+
+	if (!strcmp(rtnl_tc_get_kind((struct rtnl_tc *)cls), "flower"))
+		act = rtnl_flower_get_action(cls);
+	else if (!strcmp(rtnl_tc_get_kind((struct rtnl_tc *)cls), "matchall"))
+		act = rtnl_mall_get_first_action(cls);
+	else if (!strcmp(rtnl_tc_get_kind((struct rtnl_tc *)cls), "u32"))
+		act = rtnl_u32_get_action(cls);
+	else if (!strcmp(rtnl_tc_get_kind((struct rtnl_tc *)cls), "basic"))
+		act = rtnl_basic_get_action(cls);
+
+	if (act) {
+		int i;
+		for (i = 0; i < ARRAY_SIZE(tc_attrs); i++)
+			c_tx = rtnl_tc_get_stat((struct rtnl_tc*)act, tc_attrs[i].txid);
+
+		update_tc_attrs(e, (struct rtnl_tc *)act);
+	}
+}
+
 static struct element *handle_tc_obj(struct rtnl_tc *tc, const char *prefix,
 				     const struct rdata *rdata)
 {
@@ -577,6 +604,9 @@ static struct element *handle_tc_obj(struct rtnl_tc *tc, const char *prefix,
 	}
 
 	update_tc_attrs(e, tc);
+	/*  TC filters have 0 stats. overwrite them with the 1st actions stat */
+	if (!strcmp(prefix, "cls"))
+		workaround_classifier_stats(e, (struct rtnl_cls *)tc);
 
 	element_notify_update(e, NULL);
 	element_lifesign(e, 1);
